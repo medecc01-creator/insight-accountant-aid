@@ -51,23 +51,15 @@ const colorFor = (c: string) => CATEGORY_COLORS[c] ?? "#64748b";
 const fmt = (n: number) =>
   new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR", maximumFractionDigits: 2 }).format(n);
 
-function readFileAsText(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const fr = new FileReader();
-    fr.onerror = () => reject(fr.error);
-    fr.onload = () => resolve(String(fr.result));
-    // Try UTF-8 first; if replacement chars appear, re-read as windows-1252
-    fr.readAsText(file, "utf-8");
-    fr.addEventListener("load", () => {
-      const s = String(fr.result);
-      if (s.includes("\ufffd") || /Ã©|Ã¨|Ã /.test(s)) {
-        const fr2 = new FileReader();
-        fr2.onload = () => resolve(String(fr2.result));
-        fr2.onerror = () => reject(fr2.error);
-        fr2.readAsText(file, "windows-1252");
-      }
-    }, { once: true });
-  });
+async function readFileAsText(file: File): Promise<string> {
+  const buf = await file.arrayBuffer();
+  // Try strict UTF-8 first
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(buf);
+  } catch {
+    // Fallback to windows-1252 (typical for French exports from Excel)
+    return new TextDecoder("windows-1252").decode(buf);
+  }
 }
 
 function App() {

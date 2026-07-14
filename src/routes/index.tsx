@@ -502,19 +502,50 @@ function MonthWorkspace({
         toast.error("Aucune ligne détectée dans le relevé");
         return;
       }
+      const DAY_MS = 86_400_000;
+      const MAX_DAYS = 5;
+      const dateMs = (iso: string | null) => (iso ? new Date(iso).getTime() : NaN);
+
       let matched = 0;
       const stillUnmatched: BankLine[] = [];
       persist((d) => {
-        const monthList = d.transactions.filter((t) => t.year === currentYear && t.month === currentMonth);
+        const monthList = d.transactions.filter(
+          (t) => t.year === currentYear && t.month === currentMonth,
+        );
         const usedIds = new Set<string>();
+
         for (const bl of lines) {
           const target = bl.montant; // signed
-          const cand = monthList.find((t) => {
-            if (usedIds.has(t.id)) return false;
-            if (t.pointe) return false;
-            const signed = t.recettes > 0 ? t.recettes : -t.depenses;
-            return Math.abs(signed - target) < 0.005;
-          });
+          const isDebit = target < 0;
+          const absTarget = Math.abs(target);
+          const bankMs = dateMs(bl.date);
+
+          // Score candidates: matching sign + amount at cent precision + date proximity
+          const candidates = monthList
+            .filter((t) => {
+              if (usedIds.has(t.id)) return false;
+              if (t.pointe) return false;
+              const txAbs = isDebit ? t.depenses : t.recettes;
+              if (isDebit && t.depenses === 0) return false;
+              if (!isDebit && t.recettes === 0) return false;
+              if (Math.round(txAbs * 100) !== Math.round(absTarget * 100)) return false;
+              // Date proximity: if either date missing, skip check
+              if (!isNaN(bankMs) && t.date) {
+                const diff = Math.abs(bankMs - dateMs(t.date)) / DAY_MS;
+                if (diff > MAX_DAYS) return false;
+              }
+              return true;
+            })
+            .map((t) => {
+              const diffDays =
+                !isNaN(bankMs) && t.date
+                  ? Math.abs(bankMs - dateMs(t.date)) / DAY_MS
+                  : 99;
+              return { t, diffDays };
+            })
+            .sort((a, b) => a.diffDays - b.diffDays);
+
+          const cand = candidates[0]?.t;
           if (cand) {
             usedIds.add(cand.id);
             matched++;
@@ -522,17 +553,21 @@ function MonthWorkspace({
             stillUnmatched.push(bl);
           }
         }
+
         d.transactions = d.transactions.map((t) =>
           usedIds.has(t.id) ? { ...t, pointe: true } : t,
         );
         return d;
       });
       setBankLines(stillUnmatched);
-      toast.success(`Rapprochement : ${matched} correspondances, ${stillUnmatched.length} oubliées`);
+      toast.success(
+        `Rapprochement : ${matched} rapprochée${matched > 1 ? "s" : ""}, ${stillUnmatched.length} manquante${stillUnmatched.length > 1 ? "s" : ""}`,
+      );
     } catch (e) {
       toast.error("Erreur : " + (e as Error).message);
     }
   };
+
 
   return (
     <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1fr_340px]">

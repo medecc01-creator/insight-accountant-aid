@@ -752,14 +752,16 @@ function MonthWorkspace({
           });
           setAddOpen(false);
           setPrefill(null);
-          // Remove from oubliées if matches
+          // Remove from missing list if it matches
           if (prefill) {
-            setBankLines((prev) => prev.filter((bl) =>
-              !(bl.libelle === prefill.libelle && Math.abs((bl.montant > 0 ? bl.montant : -bl.montant) - (tx.recettes || -tx.depenses)) < 0.005)
-            ));
+            const targetAbs = tx.recettes || tx.depenses;
+            setBankLines((prev) =>
+              prev.filter((bl) => Math.abs(Math.abs(bl.montant) - targetAbs) >= 0.005),
+            );
           }
           toast.success("Transaction ajoutée");
         }}
+
       />
     </div>
   );

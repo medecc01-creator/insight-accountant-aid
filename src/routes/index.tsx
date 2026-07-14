@@ -27,7 +27,7 @@ import { cn } from "@/lib/utils";
 
 import type { DBShape, Transaction } from "@/lib/finance/types";
 import { loadDB, saveDB, autocomplete, suggestFromLibelle, learnFromTransaction, upsertTemplate, emptyDB } from "@/lib/finance/store";
-import { parseComptaCSV, parseBankCSV, MONTH_LABELS, type BankLine } from "@/lib/finance/parser";
+import { parseComptaCSV, parseBankCSV, cleanBankLibelle, MONTH_LABELS, type BankLine } from "@/lib/finance/parser";
 
 export const Route = createFileRoute("/")({
   component: App,

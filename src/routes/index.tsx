@@ -27,7 +27,7 @@ import { cn } from "@/lib/utils";
 
 import type { DBShape, Transaction } from "@/lib/finance/types";
 import { loadDB, saveDB, autocomplete, suggestFromLibelle, learnFromTransaction, upsertTemplate, emptyDB } from "@/lib/finance/store";
-import { parseComptaCSV, parseBankCSV, cleanBankLibelle, MONTH_LABELS, type BankLine } from "@/lib/finance/parser";
+import { parseComptaCSV, parseBankCSV, parseAmount, cleanBankLibelle, MONTH_LABELS, type BankLine } from "@/lib/finance/parser";
 
 export const Route = createFileRoute("/")({
   component: App,
@@ -454,6 +454,47 @@ function Stat({ icon, label, value, tone, strong }: { icon: React.ReactNode; lab
 
 const CATEGORIES = ["Maison","Voiture","Courses","Carburant","Ecole","École","Divers","Santé","Cadeaux","Vacances/Loisirs","Frais Travail"];
 const PAYMENTS = ["CB","Virement","Paypal","Chèque","Espèces"];
+const RECONCILIATION_DAY_MS = 86_400_000;
+const RECONCILIATION_MAX_DAYS = 7;
+
+function toCents(value: number | string): number {
+  const amount = typeof value === "string" ? parseAmount(value) : value;
+  return Math.round(Math.abs(amount) * 100);
+}
+
+function toTimestamp(iso: string | null): number {
+  if (!iso) return NaN;
+  const [year, month, day] = iso.split("-").map(Number);
+  return year && month && day ? Date.UTC(year, month - 1, day) : NaN;
+}
+
+function diffDays(a: string | null, b: string | null): number {
+  const aMs = toTimestamp(a);
+  const bMs = toTimestamp(b);
+  if (Number.isNaN(aMs) || Number.isNaN(bMs)) return Number.POSITIVE_INFINITY;
+  return Math.abs(aMs - bMs) / RECONCILIATION_DAY_MS;
+}
+
+function normalizeLibelle(value: string): string {
+  return cleanBankLibelle(value)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\b(paiement|achat|carte|cb|prlv|prelevement|sepa|virement|vir|retrait|dab|ref|id|mandat|mdt)\b/g, " ")
+    .replace(/\d+/g, " ")
+    .replace(/[^a-z]+/g, " ")
+    .trim();
+}
+
+function libelleScore(bankLibelle: string, transactionLibelle: string): number {
+  const bank = normalizeLibelle(bankLibelle);
+  const tx = normalizeLibelle(transactionLibelle);
+  if (!bank || !tx) return 0;
+  if (bank.includes(tx) || tx.includes(bank)) return 3;
+  const bankWords = new Set(bank.split(/\s+/).filter((word) => word.length >= 3));
+  const txWords = tx.split(/\s+/).filter((word) => word.length >= 3);
+  return txWords.reduce((score, word) => score + (bankWords.has(word) ? 1 : 0), 0);
+}
 
 function MonthWorkspace({
   db, setDb, persist, currentMonth, currentYear,
@@ -502,10 +543,6 @@ function MonthWorkspace({
         toast.error("Aucune ligne détectée dans le relevé");
         return;
       }
-      const DAY_MS = 86_400_000;
-      const MAX_DAYS = 5;
-      const dateMs = (iso: string | null) => (iso ? new Date(iso).getTime() : NaN);
-
       // Pure computation on current db snapshot
       const monthList = db.transactions.filter(
         (t) => t.year === currentYear && t.month === currentMonth,
@@ -514,33 +551,24 @@ function MonthWorkspace({
       const unmatched: BankLine[] = [];
 
       for (const bl of lines) {
-        const target = bl.montant;
-        const isDebit = target < 0;
-        const absTarget = Math.abs(target);
-        const bankMs = dateMs(bl.date);
+        const bankCents = toCents(bl.montant);
+        if (bankCents === 0) continue;
 
         const candidates = monthList
           .filter((t) => {
             if (usedIds.has(t.id)) return false;
-            if (t.pointe) return false;
-            const txAbs = isDebit ? t.depenses : t.recettes;
-            if (isDebit && t.depenses === 0) return false;
-            if (!isDebit && t.recettes === 0) return false;
-            if (Math.round(txAbs * 100) !== Math.round(absTarget * 100)) return false;
-            if (!isNaN(bankMs) && t.date) {
-              const diff = Math.abs(bankMs - dateMs(t.date)) / DAY_MS;
-              if (diff > MAX_DAYS) return false;
-            }
+            const txCents = Math.max(toCents(t.recettes), toCents(t.depenses));
+            if (txCents === 0 || txCents !== bankCents) return false;
+            const days = diffDays(bl.date, t.date);
+            if (days > RECONCILIATION_MAX_DAYS) return false;
             return true;
           })
           .map((t) => ({
             t,
-            diffDays:
-              !isNaN(bankMs) && t.date
-                ? Math.abs(bankMs - dateMs(t.date)) / DAY_MS
-                : 99,
+            diffDays: diffDays(bl.date, t.date),
+            libelleScore: libelleScore(bl.libelle, t.libelle),
           }))
-          .sort((a, b) => a.diffDays - b.diffDays);
+          .sort((a, b) => b.libelleScore - a.libelleScore || a.diffDays - b.diffDays);
 
         const cand = candidates[0]?.t;
         if (cand) usedIds.add(cand.id);

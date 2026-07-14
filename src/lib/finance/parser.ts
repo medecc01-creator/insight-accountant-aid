@@ -23,13 +23,26 @@ export const MONTH_LABELS = [
 
 export function parseAmount(s: string): number {
   if (!s) return 0;
-  const cleaned = s
+  const compact = s
     .replace(/€/g, "")
     .replace(/\u00a0/g, "")
     .replace(/\s/g, "")
-    .replace(/\./g, "") // thousands (rare)
-    .replace(",", ".")
     .trim();
+  const commaIndex = compact.lastIndexOf(",");
+  const dotIndex = compact.lastIndexOf(".");
+  const hasComma = commaIndex !== -1;
+  const hasDot = dotIndex !== -1;
+  let cleaned = compact;
+
+  if (hasComma && hasDot) {
+    // Last separator is the decimal separator: "1.234,56" or "1,234.56".
+    cleaned = commaIndex > dotIndex
+      ? compact.replace(/\./g, "").replace(",", ".")
+      : compact.replace(/,/g, "");
+  } else if (hasComma) {
+    cleaned = compact.replace(/\./g, "").replace(",", ".");
+  }
+
   if (!cleaned || cleaned === "-") return 0;
   const n = parseFloat(cleaned);
   return isNaN(n) ? 0 : n;

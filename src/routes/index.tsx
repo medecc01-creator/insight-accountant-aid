@@ -557,7 +557,6 @@ function MonthWorkspace({
         const candidates = monthList
           .filter((t) => {
             if (usedIds.has(t.id)) return false;
-            if (t.pointe) return false;
             const txCents = Math.max(toCents(t.recettes), toCents(t.depenses));
             if (txCents === 0 || txCents !== bankCents) return false;
             const days = diffDays(bl.date, t.date);

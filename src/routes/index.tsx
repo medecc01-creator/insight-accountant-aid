@@ -689,43 +689,50 @@ function MonthWorkspace({
               <div>
                 <div className="mb-2 flex items-center justify-between">
                   <p className="text-xs font-medium uppercase tracking-wide text-rose-400">
-                    Transactions oubliées ({bankLines.length})
+                    Transactions manquantes ({bankLines.length})
                   </p>
                   <Button variant="ghost" size="sm" onClick={() => setBankLines([])}>Effacer</Button>
                 </div>
                 <ScrollArea className="max-h-[400px]">
                   <div className="space-y-2">
-                    {bankLines.map((bl, i) => (
-                      <div key={i} className="rounded-lg border border-rose-500/30 bg-rose-500/5 p-3">
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="min-w-0 flex-1">
-                            <p className="truncate text-sm font-medium">{bl.libelle || "(sans libellé)"}</p>
-                            <p className="text-xs text-muted-foreground">
-                              {bl.date ? new Date(bl.date).toLocaleDateString("fr-FR") : "—"} · <span className={bl.montant < 0 ? "text-rose-400" : "text-emerald-400"}>{fmt(bl.montant)}</span>
-                            </p>
+                    {bankLines.map((bl, i) => {
+                      const cleanLib = cleanBankLibelle(bl.libelle);
+                      return (
+                        <div key={i} className="rounded-lg border border-rose-500/30 bg-rose-500/5 p-3">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-sm font-medium" title={bl.libelle}>
+                                {cleanLib || "(sans libellé)"}
+                              </p>
+                              <p className="text-xs text-muted-foreground">
+                                {bl.date ? new Date(bl.date).toLocaleDateString("fr-FR") : "—"} ·{" "}
+                                <span className={bl.montant < 0 ? "text-rose-400" : "text-emerald-400"}>{fmt(bl.montant)}</span>
+                              </p>
+                            </div>
+                            <Button
+                              size="icon"
+                              className="h-7 w-7 shrink-0"
+                              onClick={() => {
+                                setPrefill({
+                                  date: bl.date,
+                                  libelle: cleanLib,
+                                  recettes: bl.montant > 0 ? bl.montant : 0,
+                                  depenses: bl.montant < 0 ? Math.abs(bl.montant) : 0,
+                                });
+                                setAddOpen(true);
+                              }}
+                            >
+                              <Plus className="h-4 w-4" />
+                            </Button>
                           </div>
-                          <Button
-                            size="icon"
-                            className="h-7 w-7 shrink-0"
-                            onClick={() => {
-                              setPrefill({
-                                date: bl.date,
-                                libelle: bl.libelle,
-                                recettes: bl.montant > 0 ? bl.montant : 0,
-                                depenses: bl.montant < 0 ? Math.abs(bl.montant) : 0,
-                              });
-                              setAddOpen(true);
-                            }}
-                          >
-                            <Plus className="h-4 w-4" />
-                          </Button>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </ScrollArea>
               </div>
             )}
+
           </CardContent>
         </Card>
       </div>

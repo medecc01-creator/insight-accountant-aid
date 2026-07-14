@@ -210,3 +210,45 @@ export function parseBankCSV(text: string): BankLine[] {
   }
   return out;
 }
+
+/** Clean a raw bank statement label into a readable merchant name. */
+export function cleanBankLibelle(raw: string): string {
+  if (!raw) return "";
+  let s = raw.replace(/\s+/g, " ").trim();
+
+  // Strip common French bank prefixes
+  const prefixes = [
+    /^PAIEMENT\s+CB\s+\d{2,4}(\/\d{2,4})?\s*/i,
+    /^CB\s+\d{2,4}(\/\d{2,4})?\s*/i,
+    /^ACHAT\s+CB\s+\d{2,4}(\/\d{2,4})?\s*/i,
+    /^CARTE\s+\d{2,}\s*/i,
+    /^PRLV\s+SEPA\s+/i,
+    /^PRELEVEMENT\s+SEPA\s+/i,
+    /^PRLV\s+/i,
+    /^PRELEVEMENT\s+/i,
+    /^VIR\s+(SEPA\s+|INST\s+|RECU\s+|EMIS\s+)?/i,
+    /^VIREMENT\s+(SEPA\s+|INSTANTANE\s+|RECU\s+|EMIS\s+|EN\s+FAVEUR\s+DE\s+)?/i,
+    /^RETRAIT\s+DAB\s+\d{2,4}(\/\d{2,4})?\s*/i,
+    /^RETRAIT\s+/i,
+    /^REMISE\s+CHEQUE\s*/i,
+    /^CHEQUE\s+N?°?\s*\d*\s*/i,
+    /^FRAIS\s+/i,
+  ];
+  for (const p of prefixes) s = s.replace(p, "");
+
+  // Strip trailing transaction numbers / references
+  s = s
+    .replace(/\s+(REF|ID|MDT|MANDAT|NUM|N°)\s*[:\-]?\s*\S+.*$/i, "")
+    .replace(/\s+\d{6,}\s*$/g, "") // long trailing numbers
+    .replace(/\s+CB\*+\d+\s*$/i, "")
+    .replace(/\s+\d{2}\/\d{2}\/\d{2,4}\s*$/g, "") // trailing dates
+    .replace(/\s+\d{2}\/\d{2}\s*$/g, "");
+
+  // Title case for all-uppercase strings (>=3 letters)
+  if (/^[^a-z]+$/.test(s) && /[A-Z]/.test(s)) {
+    s = s.toLowerCase().replace(/\b([a-zà-ÿ])/g, (m) => m.toUpperCase());
+  }
+
+  return s.trim().replace(/\s+/g, " ") || raw.trim();
+}
+

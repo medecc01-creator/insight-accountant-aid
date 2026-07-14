@@ -27,7 +27,7 @@ import { cn } from "@/lib/utils";
 
 import type { DBShape, Transaction } from "@/lib/finance/types";
 import { loadDB, saveDB, autocomplete, suggestFromLibelle, learnFromTransaction, upsertTemplate, emptyDB } from "@/lib/finance/store";
-import { parseComptaCSV, parseBankCSV, MONTH_LABELS, type BankLine } from "@/lib/finance/parser";
+import { parseComptaCSV, parseBankCSV, cleanBankLibelle, MONTH_LABELS, type BankLine } from "@/lib/finance/parser";
 
 export const Route = createFileRoute("/")({
   component: App,
@@ -502,37 +502,68 @@ function MonthWorkspace({
         toast.error("Aucune ligne détectée dans le relevé");
         return;
       }
-      let matched = 0;
-      const stillUnmatched: BankLine[] = [];
-      persist((d) => {
-        const monthList = d.transactions.filter((t) => t.year === currentYear && t.month === currentMonth);
-        const usedIds = new Set<string>();
-        for (const bl of lines) {
-          const target = bl.montant; // signed
-          const cand = monthList.find((t) => {
+      const DAY_MS = 86_400_000;
+      const MAX_DAYS = 5;
+      const dateMs = (iso: string | null) => (iso ? new Date(iso).getTime() : NaN);
+
+      // Pure computation on current db snapshot
+      const monthList = db.transactions.filter(
+        (t) => t.year === currentYear && t.month === currentMonth,
+      );
+      const usedIds = new Set<string>();
+      const unmatched: BankLine[] = [];
+
+      for (const bl of lines) {
+        const target = bl.montant;
+        const isDebit = target < 0;
+        const absTarget = Math.abs(target);
+        const bankMs = dateMs(bl.date);
+
+        const candidates = monthList
+          .filter((t) => {
             if (usedIds.has(t.id)) return false;
             if (t.pointe) return false;
-            const signed = t.recettes > 0 ? t.recettes : -t.depenses;
-            return Math.abs(signed - target) < 0.005;
-          });
-          if (cand) {
-            usedIds.add(cand.id);
-            matched++;
-          } else {
-            stillUnmatched.push(bl);
-          }
-        }
+            const txAbs = isDebit ? t.depenses : t.recettes;
+            if (isDebit && t.depenses === 0) return false;
+            if (!isDebit && t.recettes === 0) return false;
+            if (Math.round(txAbs * 100) !== Math.round(absTarget * 100)) return false;
+            if (!isNaN(bankMs) && t.date) {
+              const diff = Math.abs(bankMs - dateMs(t.date)) / DAY_MS;
+              if (diff > MAX_DAYS) return false;
+            }
+            return true;
+          })
+          .map((t) => ({
+            t,
+            diffDays:
+              !isNaN(bankMs) && t.date
+                ? Math.abs(bankMs - dateMs(t.date)) / DAY_MS
+                : 99,
+          }))
+          .sort((a, b) => a.diffDays - b.diffDays);
+
+        const cand = candidates[0]?.t;
+        if (cand) usedIds.add(cand.id);
+        else unmatched.push(bl);
+      }
+
+      const matched = usedIds.size;
+      persist((d) => {
         d.transactions = d.transactions.map((t) =>
           usedIds.has(t.id) ? { ...t, pointe: true } : t,
         );
         return d;
       });
-      setBankLines(stillUnmatched);
-      toast.success(`Rapprochement : ${matched} correspondances, ${stillUnmatched.length} oubliées`);
+      setBankLines(unmatched);
+      toast.success(
+        `Rapprochement : ${matched} rapprochée${matched > 1 ? "s" : ""}, ${unmatched.length} manquante${unmatched.length > 1 ? "s" : ""}`,
+      );
     } catch (e) {
       toast.error("Erreur : " + (e as Error).message);
     }
   };
+
+
 
   return (
     <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1fr_340px]">
@@ -654,43 +685,50 @@ function MonthWorkspace({
               <div>
                 <div className="mb-2 flex items-center justify-between">
                   <p className="text-xs font-medium uppercase tracking-wide text-rose-400">
-                    Transactions oubliées ({bankLines.length})
+                    Transactions manquantes ({bankLines.length})
                   </p>
                   <Button variant="ghost" size="sm" onClick={() => setBankLines([])}>Effacer</Button>
                 </div>
                 <ScrollArea className="max-h-[400px]">
                   <div className="space-y-2">
-                    {bankLines.map((bl, i) => (
-                      <div key={i} className="rounded-lg border border-rose-500/30 bg-rose-500/5 p-3">
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="min-w-0 flex-1">
-                            <p className="truncate text-sm font-medium">{bl.libelle || "(sans libellé)"}</p>
-                            <p className="text-xs text-muted-foreground">
-                              {bl.date ? new Date(bl.date).toLocaleDateString("fr-FR") : "—"} · <span className={bl.montant < 0 ? "text-rose-400" : "text-emerald-400"}>{fmt(bl.montant)}</span>
-                            </p>
+                    {bankLines.map((bl, i) => {
+                      const cleanLib = cleanBankLibelle(bl.libelle);
+                      return (
+                        <div key={i} className="rounded-lg border border-rose-500/30 bg-rose-500/5 p-3">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-sm font-medium" title={bl.libelle}>
+                                {cleanLib || "(sans libellé)"}
+                              </p>
+                              <p className="text-xs text-muted-foreground">
+                                {bl.date ? new Date(bl.date).toLocaleDateString("fr-FR") : "—"} ·{" "}
+                                <span className={bl.montant < 0 ? "text-rose-400" : "text-emerald-400"}>{fmt(bl.montant)}</span>
+                              </p>
+                            </div>
+                            <Button
+                              size="icon"
+                              className="h-7 w-7 shrink-0"
+                              onClick={() => {
+                                setPrefill({
+                                  date: bl.date,
+                                  libelle: cleanLib,
+                                  recettes: bl.montant > 0 ? bl.montant : 0,
+                                  depenses: bl.montant < 0 ? Math.abs(bl.montant) : 0,
+                                });
+                                setAddOpen(true);
+                              }}
+                            >
+                              <Plus className="h-4 w-4" />
+                            </Button>
                           </div>
-                          <Button
-                            size="icon"
-                            className="h-7 w-7 shrink-0"
-                            onClick={() => {
-                              setPrefill({
-                                date: bl.date,
-                                libelle: bl.libelle,
-                                recettes: bl.montant > 0 ? bl.montant : 0,
-                                depenses: bl.montant < 0 ? Math.abs(bl.montant) : 0,
-                              });
-                              setAddOpen(true);
-                            }}
-                          >
-                            <Plus className="h-4 w-4" />
-                          </Button>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </ScrollArea>
               </div>
             )}
+
           </CardContent>
         </Card>
       </div>
@@ -710,14 +748,16 @@ function MonthWorkspace({
           });
           setAddOpen(false);
           setPrefill(null);
-          // Remove from oubliées if matches
+          // Remove from missing list if it matches
           if (prefill) {
-            setBankLines((prev) => prev.filter((bl) =>
-              !(bl.libelle === prefill.libelle && Math.abs((bl.montant > 0 ? bl.montant : -bl.montant) - (tx.recettes || -tx.depenses)) < 0.005)
-            ));
+            const targetAbs = tx.recettes || tx.depenses;
+            setBankLines((prev) =>
+              prev.filter((bl) => Math.abs(Math.abs(bl.montant) - targetAbs) >= 0.005),
+            );
           }
           toast.success("Transaction ajoutée");
         }}
+
       />
     </div>
   );

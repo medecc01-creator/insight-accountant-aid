@@ -123,13 +123,13 @@ function App() {
         lastYear = year;
         lastMonth = month;
         let addedCount = 0;
-        persist((d) => {
-          // Strict global dedup across ALL months: ignore lines identical to any existing tx
+      persist((d) => {
+          // Strict global dedup across ALL months: ignore lines identical to any existing tx (secured libelle)
           const isDup = (nt: Transaction) => d.transactions.some((et) =>
             et.date === nt.date &&
-            et.libelle.trim().toLowerCase() === nt.libelle.trim().toLowerCase() &&
+            (et.libelle || "").trim().toLowerCase() === (nt.libelle || "").trim().toLowerCase() &&
             Math.abs(et.recettes - nt.recettes) < 0.005 &&
-            Math.abs(et.depenses - nt.depenses) < 0.005,
+            Math.abs(et.depenses - nt.depenses) < 0.005
           );
           const toAdd = transactions.filter((nt) => !isDup(nt));
           addedCount = toAdd.length;
@@ -568,7 +568,7 @@ function CategoryManagerDialog({
   const add = () => {
     const name = draft.trim();
     if (!name) return;
-    if (categories.some((c) => c.toLowerCase() === name.toLowerCase())) {
+   if (categories.some((c) => (c || "").toLowerCase() === (name || "").toLowerCase())) {
       toast.error("Cette catégorie existe déjà");
       return;
     }
@@ -674,7 +674,8 @@ function diffDays(a: string | null, b: string | null): number {
 }
 
 function normalizeLibelle(value: string): string {
-  return cleanBankLibelle(value)
+  const safeValue = value || "";
+  return cleanBankLibelle(safeValue)
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
@@ -763,13 +764,13 @@ function MonthWorkspace({
 
   const monthTx = db.transactions.filter((t) => t.year === currentYear && t.month === currentMonth);
   const filtered = monthTx
-    .filter((t) => {
+  .filter((t) => {
       if (catFilter !== "all" && t.categorie !== catFilter) return false;
       if (pointFilter === "yes" && !t.pointe) return false;
       if (pointFilter === "no" && t.pointe) return false;
       if (search) {
         const q = search.toLowerCase();
-        const matchesLibelle = t.libelle.toLowerCase().includes(q);
+        const matchesLibelle = (t.libelle || "").toLowerCase().includes(q);
         const txAbs = t.recettes || t.depenses;
         const matchesAmount = isAmountSearch && Math.abs(txAbs - Math.abs(searchNum)) < 0.005;
         if (!matchesLibelle && !matchesAmount) return false;

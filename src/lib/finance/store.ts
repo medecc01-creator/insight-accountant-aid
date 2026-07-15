@@ -3,13 +3,24 @@ import type { DBShape, Transaction, Template } from "./types";
 
 const KEY = "compta-db-v1";
 
-export const emptyDB = (): DBShape => ({ transactions: [], templates: [], version: 1 });
+export const DEFAULT_CATEGORIES = [
+  "Maison", "Voiture", "Courses", "Carburant", "École",
+  "Divers", "Santé", "Cadeaux", "Vacances/Loisirs", "Frais Travail",
+];
+
+export const emptyDB = (): DBShape => ({
+  transactions: [],
+  templates: [],
+  categories: [...DEFAULT_CATEGORIES],
+  version: 1,
+});
 
 export async function loadDB(): Promise<DBShape> {
   try {
     const data = (await get<DBShape>(KEY)) ?? emptyDB();
     if (!data.transactions) data.transactions = [];
     if (!data.templates) data.templates = [];
+    if (!data.categories || data.categories.length === 0) data.categories = [...DEFAULT_CATEGORIES];
     return data;
   } catch {
     return emptyDB();

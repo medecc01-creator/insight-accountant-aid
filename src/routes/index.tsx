@@ -7,7 +7,7 @@ import {
 import {
   Upload, Download, Plus, Search, Wallet, TrendingUp, TrendingDown,
   CheckCircle2, Clock, X, FileUp, Database, Landmark, Circle,
-  Sun, Moon, Laptop, Lightbulb, Link2, ChevronDown,
+  Sun, Moon, Laptop, Lightbulb, Link2, ChevronDown, Trash2, Settings2,
 } from "lucide-react";
 import { toast, Toaster } from "sonner";
 
@@ -43,7 +43,13 @@ const CATEGORY_COLORS: Record<string, string> = {
   École: "#a78bfa", Ecole: "#a78bfa", Divers: "#94a3b8", Santé: "#10b981",
   Cadeaux: "#ec4899", "Vacances/Loisirs": "#eab308", "Frais Travail": "#0ea5e9",
 };
-const colorFor = (c: string) => CATEGORY_COLORS[c] ?? "#64748b";
+const COLOR_PALETTE = ["#6366f1","#22d3ee","#f59e0b","#f43f5e","#a78bfa","#10b981","#ec4899","#eab308","#0ea5e9","#14b8a6","#f97316","#8b5cf6"];
+const colorFor = (c: string) => {
+  if (CATEGORY_COLORS[c]) return CATEGORY_COLORS[c];
+  let h = 0;
+  for (let i = 0; i < c.length; i++) h = (h * 31 + c.charCodeAt(i)) | 0;
+  return COLOR_PALETTE[Math.abs(h) % COLOR_PALETTE.length];
+};
 
 const fmt = (n: number) =>
   new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR", maximumFractionDigits: 2 }).format(n);
@@ -103,22 +109,36 @@ function App() {
   }, [db, ready]);
 
   const persist = (updater: (d: DBShape) => DBShape) =>
-    setDb((d) => updater({ ...d, transactions: [...d.transactions], templates: [...d.templates] }));
+    setDb((d) => updater({ ...d, transactions: [...d.transactions], templates: [...d.templates], categories: [...d.categories] }));
 
   const handleComptaImport = async (file: File) => {
     try {
       const text = await readSpreadsheetAsCSV(file);
       const { transactions, templates, year, month } = parseComptaCSV(text, file.name);
+      let addedCount = 0;
       persist((d) => {
-        d.transactions = d.transactions.filter((t) => !(t.year === year && t.month === month));
-        d.transactions.push(...transactions);
+        const existing = d.transactions.filter((t) => t.year === year && t.month === month);
+        const isDup = (nt: Transaction) => existing.some((et) =>
+          et.date === nt.date &&
+          et.libelle.trim().toLowerCase() === nt.libelle.trim().toLowerCase() &&
+          Math.abs(et.recettes - nt.recettes) < 0.005 &&
+          Math.abs(et.depenses - nt.depenses) < 0.005,
+        );
+        const toAdd = transactions.filter((nt) => !isDup(nt));
+        addedCount = toAdd.length;
+        d.transactions = [...d.transactions, ...toAdd];
         for (const t of templates) upsertTemplate(d, { libelle: t.libelle });
-        for (const tx of transactions) learnFromTransaction(d, tx);
+        for (const tx of toAdd) learnFromTransaction(d, tx);
         return d;
       });
       setCurrentMonth(month);
       setCurrentYear(year);
-      toast.success(`Importé : ${transactions.length} transactions (${MONTH_LABELS[month - 1]} ${year})`);
+      const dupCount = transactions.length - addedCount;
+      toast.success(
+        `Importé : ${addedCount} nouvelle${addedCount > 1 ? "s" : ""} transaction${addedCount > 1 ? "s" : ""}` +
+        (dupCount > 0 ? ` · ${dupCount} doublon${dupCount > 1 ? "s" : ""} ignoré${dupCount > 1 ? "s" : ""}` : "") +
+        ` (${MONTH_LABELS[month - 1]} ${year})`,
+      );
     } catch (e) {
       toast.error("Erreur d'import : " + (e as Error).message);
     }
@@ -135,6 +155,16 @@ function App() {
     () => db.transactions.filter((t) => t.year === currentYear && t.month === currentMonth),
     [db.transactions, currentYear, currentMonth],
   );
+
+  const initialBalance = useMemo(
+    () => db.transactions
+      .filter((t) => t.year < currentYear || (t.year === currentYear && t.month < currentMonth))
+      .reduce((sum, t) => sum + t.recettes - t.depenses, 0),
+    [db.transactions, currentYear, currentMonth],
+  );
+
+  const updateCategories = (cats: string[]) =>
+    persist((d) => ({ ...d, categories: cats }));
 
   return (
     <div className="min-h-screen bg-background">
@@ -180,7 +210,12 @@ function App() {
               </TabsList>
 
               <TabsContent value={String(currentMonth)} className="space-y-6">
-                <MonthDashboard tx={monthTx} />
+                <MonthDashboard
+                  tx={monthTx}
+                  categories={db.categories}
+                  onUpdateCategories={updateCategories}
+                  initialBalance={initialBalance}
+                />
                 <MonthWorkspace
                   db={db}
                   setDb={setDb}
@@ -365,25 +400,35 @@ function ImportComptaButton({ onFile }: { onFile: (f: File) => void }) {
 
 // ---------------- Dashboard ----------------
 
-function MonthDashboard({ tx }: { tx: Transaction[] }) {
+function MonthDashboard({
+  tx, categories, onUpdateCategories, initialBalance,
+}: {
+  tx: Transaction[];
+  categories: string[];
+  onUpdateCategories: (cats: string[]) => void;
+  initialBalance: number;
+}) {
+  const [catManagerOpen, setCatManagerOpen] = useState(false);
   const totalRec = tx.reduce((a, t) => a + t.recettes, 0);
   const totalDep = tx.reduce((a, t) => a + t.depenses, 0);
   const solde = totalRec - totalDep;
+  const resteAVivre = initialBalance + solde;
 
   const byCat = useMemo(() => {
+    const active = new Set(categories);
     const map = new Map<string, number>();
     for (const t of tx) {
-      if (t.depenses > 0 && t.categorie) {
+      if (t.depenses > 0 && t.categorie && active.has(t.categorie)) {
         map.set(t.categorie, (map.get(t.categorie) ?? 0) + t.depenses);
       }
     }
     return Array.from(map, ([categorie, montant]) => ({ categorie, montant }))
       .sort((a, b) => b.montant - a.montant);
-  }, [tx]);
+  }, [tx, categories]);
 
   const donut = [
     { name: "Dépenses", value: totalDep, color: "#f43f5e" },
-    { name: "Reste", value: Math.max(0, solde), color: "#10b981" },
+    { name: "Reste", value: Math.max(0, resteAVivre), color: "#10b981" },
   ];
 
   return (
@@ -432,19 +477,30 @@ function MonthDashboard({ tx }: { tx: Transaction[] }) {
             <div
               className={cn(
                 "mt-1 font-bold tabular-nums",
-                solde >= 0 ? "text-emerald-500 dark:text-emerald-400" : "text-rose-500 dark:text-rose-400",
+                resteAVivre >= 0 ? "text-emerald-500 dark:text-emerald-400" : "text-rose-500 dark:text-rose-400",
               )}
               style={{ fontSize: "2rem" }}
             >
-              {fmt(solde)}
+              {fmt(resteAVivre)}
             </div>
+            {initialBalance !== 0 && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                Solde initial reporté :{" "}
+                <span className={cn("font-medium tabular-nums", initialBalance >= 0 ? "text-emerald-500 dark:text-emerald-400" : "text-rose-500 dark:text-rose-400")}>
+                  {fmt(initialBalance)}
+                </span>
+              </p>
+            )}
           </div>
         </CardContent>
       </Card>
 
       <Card className="lg:col-span-3">
-        <CardHeader className="pb-3">
+        <CardHeader className="flex flex-row items-center justify-between pb-3">
           <CardTitle className="text-sm font-medium text-muted-foreground">Dépenses par catégorie</CardTitle>
+          <Button variant="ghost" size="sm" onClick={() => setCatManagerOpen(true)}>
+            <Settings2 className="mr-1 h-4 w-4" /> Gérer
+          </Button>
         </CardHeader>
         <CardContent>
           {byCat.length === 0 ? (
@@ -477,7 +533,74 @@ function MonthDashboard({ tx }: { tx: Transaction[] }) {
           )}
         </CardContent>
       </Card>
+      <CategoryManagerDialog
+        open={catManagerOpen}
+        onOpenChange={setCatManagerOpen}
+        categories={categories}
+        onUpdate={onUpdateCategories}
+      />
     </div>
+  );
+}
+
+function CategoryManagerDialog({
+  open, onOpenChange, categories, onUpdate,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  categories: string[];
+  onUpdate: (cats: string[]) => void;
+}) {
+  const [draft, setDraft] = useState("");
+
+  const add = () => {
+    const name = draft.trim();
+    if (!name) return;
+    if (categories.some((c) => c.toLowerCase() === name.toLowerCase())) {
+      toast.error("Cette catégorie existe déjà");
+      return;
+    }
+    onUpdate([...categories, name]);
+    setDraft("");
+  };
+  const remove = (name: string) => {
+    onUpdate(categories.filter((c) => c !== name));
+    toast.success(`Catégorie « ${name} » supprimée`);
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Gérer les catégories</DialogTitle>
+        </DialogHeader>
+        <div className="flex gap-2">
+          <Input
+            placeholder="Nouvelle catégorie…"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(); } }}
+          />
+          <Button onClick={add}><Plus className="mr-1 h-4 w-4" /> Ajouter</Button>
+        </div>
+        <div className="mt-4 max-h-72 space-y-1.5 overflow-y-auto">
+          {categories.length === 0 && (
+            <p className="py-6 text-center text-sm text-muted-foreground">Aucune catégorie.</p>
+          )}
+          {categories.map((c) => (
+            <div key={c} className="flex items-center justify-between rounded-md border border-border px-3 py-2">
+              <div className="flex items-center gap-2">
+                <Circle className="h-2.5 w-2.5 fill-current" style={{ color: colorFor(c) }} />
+                <span className="text-sm">{c}</span>
+              </div>
+              <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-rose-500" onClick={() => remove(c)}>
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          ))}
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -496,7 +619,6 @@ function Stat({ icon, label, value, tone }: { icon: React.ReactNode; label: stri
 
 // ---------------- Workspace ----------------
 
-const CATEGORIES = ["Maison","Voiture","Courses","Carburant","Ecole","École","Divers","Santé","Cadeaux","Vacances/Loisirs","Frais Travail"];
 const PAYMENTS = ["CB","Virement","Paypal","Chèque","Espèces"];
 const RECONCILIATION_DAY_MS = 86_400_000;
 const RECONCILIATION_MAX_DAYS = 7;
@@ -624,13 +746,22 @@ function MonthWorkspace({
     [db.transactions, currentYear],
   );
 
+  const searchNum = parseFloat(search.replace(",", "."));
+  const isAmountSearch = search.trim() !== "" && !isNaN(searchNum) && /^[\d,.\s+-]+$/.test(search.trim());
+
   const monthTx = db.transactions.filter((t) => t.year === currentYear && t.month === currentMonth);
   const filtered = monthTx
     .filter((t) => {
       if (catFilter !== "all" && t.categorie !== catFilter) return false;
       if (pointFilter === "yes" && !t.pointe) return false;
       if (pointFilter === "no" && t.pointe) return false;
-      if (search && !t.libelle.toLowerCase().includes(search.toLowerCase())) return false;
+      if (search) {
+        const q = search.toLowerCase();
+        const matchesLibelle = t.libelle.toLowerCase().includes(q);
+        const txAbs = t.recettes || t.depenses;
+        const matchesAmount = isAmountSearch && Math.abs(txAbs - Math.abs(searchNum)) < 0.005;
+        if (!matchesLibelle && !matchesAmount) return false;
+      }
       return true;
     })
     .sort((a, b) => {
@@ -684,11 +815,26 @@ function MonthWorkspace({
       const monthList = db.transactions.filter(
         (t) => t.year === currentYear && t.month === currentMonth,
       );
+      // Dedup: skip bank lines already reconciled (pointed) in a previous import
+      const pointedTx = monthList.filter((t) => t.pointe);
+      const alreadyReconciled = (bl: BankLine): boolean => {
+        const bankCents = toCents(bl.montant);
+        return pointedTx.some((t) => {
+          const txCents = Math.max(toCents(t.recettes), toCents(t.depenses));
+          if (txCents !== bankCents) return false;
+          if (isValidDate(t.date) && isValidDate(bl.date)) {
+            return diffDays(bl.date, t.date) <= RECONCILIATION_MAX_DAYS;
+          }
+          return true;
+        });
+      };
+      const linesToProcess = linesInMonth.filter((bl) => !alreadyReconciled(bl));
+      const skippedDupes = linesInMonth.length - linesToProcess.length;
       const usedIds = new Set<string>();
       const dateUpdates = new Map<string, string>(); // txId -> new date
       const unmatched: UnmatchedLine[] = [];
 
-      for (const bl of linesInMonth) {
+      for (const bl of linesToProcess) {
         const bankCents = toCents(bl.montant);
         if (bankCents === 0) continue;
         const bankCheque = extractChequeNum(bl.libelle);
@@ -755,7 +901,8 @@ function MonthWorkspace({
       });
       setBankLines(unmatched);
       toast.success(
-        `Rapprochement : ${usedIds.size} rapprochée${usedIds.size > 1 ? "s" : ""}, ${unmatched.length} manquante${unmatched.length > 1 ? "s" : ""}`,
+        `Rapprochement : ${usedIds.size} rapprochée${usedIds.size > 1 ? "s" : ""}, ${unmatched.length} manquante${unmatched.length > 1 ? "s" : ""}` +
+        (skippedDupes > 0 ? ` · ${skippedDupes} doublon${skippedDupes > 1 ? "s" : ""} ignoré${skippedDupes > 1 ? "s" : ""}` : ""),
       );
     } catch (e) {
       toast.error("Erreur : " + (e as Error).message);
@@ -812,13 +959,13 @@ function MonthWorkspace({
         <CardContent className="flex flex-wrap items-center gap-3 py-4">
           <div className="relative min-w-[180px] flex-1">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <Input placeholder="Rechercher un libellé…" value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
+            <Input placeholder="Rechercher par libellé ou montant…" value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
           </div>
           <Select value={catFilter} onValueChange={setCatFilter}>
             <SelectTrigger className="w-[170px]"><SelectValue placeholder="Catégorie" /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">Toutes catégories</SelectItem>
-              {CATEGORIES.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+              {db.categories.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
             </SelectContent>
           </Select>
           <Select value={pointFilter} onValueChange={(v) => setPointFilter(v as "all" | "yes" | "no")}>
@@ -953,23 +1100,34 @@ function MonthWorkspace({
                                 {extractChequeNum(bl.libelle) && <> · chèque n° {extractChequeNum(bl.libelle)}</>}
                               </p>
                             </div>
-                            <Button
-                              size="icon"
-                              className="h-8 w-8 shrink-0"
-                              onClick={() => {
-                                setEditingId(null);
-                                setPrefill({
-                                  date: bl.date,
-                                  libelle: cleanLib,
-                                  recettes: bl.montant > 0 ? bl.montant : 0,
-                                  depenses: bl.montant < 0 ? Math.abs(bl.montant) : 0,
-                                  chequeNum: extractChequeNum(bl.libelle) ?? undefined,
-                                });
-                                setAddOpen(true);
-                              }}
-                            >
-                              <Plus className="h-4 w-4" />
-                            </Button>
+                            <div className="flex shrink-0 gap-1">
+                              <Button
+                                size="icon"
+                                className="h-8 w-8"
+                                onClick={() => {
+                                  setEditingId(null);
+                                  setPrefill({
+                                    date: bl.date,
+                                    libelle: cleanLib,
+                                    recettes: bl.montant > 0 ? bl.montant : 0,
+                                    depenses: bl.montant < 0 ? Math.abs(bl.montant) : 0,
+                                    chequeNum: extractChequeNum(bl.libelle) ?? undefined,
+                                  });
+                                  setAddOpen(true);
+                                }}
+                              >
+                                <Plus className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 text-muted-foreground hover:text-rose-500"
+                                onClick={() => setBankLines((prev) => prev.filter((x) => x.id !== ul.id))}
+                                title="Supprimer cette ligne"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </div>
                           </div>
                         </div>
                         <div className="mt-2 border-t border-rose-500/20 pt-2">
@@ -1230,7 +1388,7 @@ function AddTransactionDialog({
                 <Select value={categorie} onValueChange={setCategorie}>
                   <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
                   <SelectContent>
-                    {CATEGORIES.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                    {db.categories.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>

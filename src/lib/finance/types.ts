@@ -38,5 +38,6 @@ export interface Template {
 export interface DBShape {
   transactions: Transaction[];
   templates: Template[];
+  categories: string[];
   version: 1;
 }

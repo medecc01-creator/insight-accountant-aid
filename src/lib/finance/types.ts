@@ -25,6 +25,8 @@ export interface Transaction {
   depenses: number; // positive number stored as absolute value
   moyenPaiement: string;
   pointe: boolean;
+  chequeNum?: string;
+  recurringGroupId?: string;
 }
 
 export interface Template {

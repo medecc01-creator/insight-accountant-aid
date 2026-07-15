@@ -32,10 +32,21 @@ export async function saveDB(db: DBShape) {
 }
 
 export function upsertTemplate(db: DBShape, t: Template) {
-  const key = t.libelle.trim().toLowerCase();
-  const idx = db.templates.findIndex((x) => x.libelle.trim().toLowerCase() === key);
+  const libelleTemplate = t.libelle || "";
+  const key = libelleTemplate.trim().toLowerCase();
+  
+  if (!key) return; // Si le libellé est vide, on ne l'enregistre pas comme modèle
+
+  const idx = db.templates.findIndex((x) => 
+    (x.libelle || "").trim().toLowerCase() === key
+  );
+  
   if (idx >= 0) {
     db.templates[idx] = { ...db.templates[idx], ...t };
+  } else {
+    db.templates.push(t);
+  }
+}
   } else {
     db.templates.push(t);
   }
@@ -50,11 +61,14 @@ export function learnFromTransaction(db: DBShape, tx: Transaction) {
 }
 
 export function suggestFromLibelle(db: DBShape, libelle: string): Template | null {
-  const key = libelle.trim().toLowerCase();
+  const safeLibelle = libelle || "";
+  const key = safeLibelle.trim().toLowerCase();
   if (!key) return null;
-  // Prefer last transaction match
+  
+  // Prefer last transaction match (sécurisé)
   const lastTx = [...db.transactions].reverse().find(
-    (t) => t.libelle.trim().toLowerCase() === key,
+    (t) => (t.libelle || "").trim().toLowerCase() === key,
+  );
   );
   if (lastTx) {
     return {
@@ -63,27 +77,36 @@ export function suggestFromLibelle(db: DBShape, libelle: string): Template | nul
       moyenPaiement: lastTx.moyenPaiement,
     };
   }
-  return db.templates.find((t) => t.libelle.trim().toLowerCase() === key) ?? null;
+return db.templates.find((t) => (t.libelle || "").trim().toLowerCase() === key) ?? null;
 }
 
-export function autocomplete(db: DBShape, query: string, limit = 8): Template[] {
-  const q = query.trim().toLowerCase();
+eexport function autocomplete(db: DBShape, query: string, limit = 8): Template[] {
+  const q = (query || "").trim().toLowerCase();
   if (!q) return [];
   const seen = new Set<string>();
   const out: Template[] = [];
+  
   // From transactions (most recent first)
   for (let i = db.transactions.length - 1; i >= 0; i--) {
     const t = db.transactions[i];
-    const k = t.libelle.trim().toLowerCase();
-    if (!seen.has(k) && k.includes(q)) {
+    if (!t) continue; // Sécurité si la transaction elle-même est nulle
+    
+    const libelle = t.libelle || "";
+    const k = libelle.trim().toLowerCase();
+    
+    if (k && !seen.has(k) && k.includes(q)) {
       seen.add(k);
       out.push({ libelle: t.libelle, categorie: t.categorie, moyenPaiement: t.moyenPaiement });
       if (out.length >= limit) return out;
     }
   }
   for (const t of db.templates) {
-    const k = t.libelle.trim().toLowerCase();
-    if (!seen.has(k) && k.includes(q)) {
+    if (!t) continue; // Sécurité si le template lui-même est nul
+    
+    const libelle = t.libelle || "";
+    const k = libelle.trim().toLowerCase();
+    
+    if (k && !seen.has(k) && k.includes(q)) {
       seen.add(k);
       out.push(t);
       if (out.length >= limit) return out;

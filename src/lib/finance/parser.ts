@@ -1,5 +1,28 @@
 import Papa from "papaparse";
+import * as XLSX from "xlsx";
 import type { Transaction } from "./types";
+
+/** Read a spreadsheet (CSV / XLS / XLSX) and return CSV text with `;` delimiter. */
+export async function readSpreadsheetAsCSV(file: File): Promise<string> {
+  const name = file.name.toLowerCase();
+  if (name.endsWith(".xls") || name.endsWith(".xlsx")) {
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type: "array", cellDates: false });
+    const sheet = wb.Sheets[wb.SheetNames[0]];
+    return XLSX.utils.sheet_to_csv(sheet, { FS: ";" });
+  }
+  const buf = await file.arrayBuffer();
+  try { return new TextDecoder("utf-8", { fatal: true }).decode(buf); }
+  catch { return new TextDecoder("windows-1252").decode(buf); }
+}
+
+/** Extract a cheque number from a bank libelle (e.g. "CHEQUE 6013912"). */
+export function extractChequeNum(raw: string): string | null {
+  if (!raw) return null;
+  const m = raw.match(/ch[eè]que\s*n?°?\s*(\d{3,})/i);
+  return m ? m[1] : null;
+}
+
 
 const MONTHS_FR: Record<string, number> = {
   "janv": 1, "janvier": 1, "jan": 1,

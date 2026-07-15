@@ -76,7 +76,7 @@ export function suggestFromLibelle(db: DBShape, libelle: string): Template | nul
 return db.templates.find((t) => (t.libelle || "").trim().toLowerCase() === key) ?? null;
 }
 
-eexport function autocomplete(db: DBShape, query: string, limit = 8): Template[] {
+export function autocomplete(db: DBShape, query: string, limit = 8): Template[] {
   const q = (query || "").trim().toLowerCase();
   if (!q) return [];
   const seen = new Set<string>();

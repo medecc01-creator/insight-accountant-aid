@@ -7,7 +7,7 @@ import {
 import {
   Upload, Download, Plus, Search, Wallet, TrendingUp, TrendingDown,
   CheckCircle2, Clock, X, FileUp, Database, Landmark, Circle,
-  Sun, Moon, Laptop,
+  Sun, Moon, Laptop, Lightbulb, Link2, ChevronDown,
 } from "lucide-react";
 import { toast, Toaster } from "sonner";
 
@@ -500,6 +500,26 @@ const CATEGORIES = ["Maison","Voiture","Courses","Carburant","Ecole","École","D
 const PAYMENTS = ["CB","Virement","Paypal","Chèque","Espèces"];
 const RECONCILIATION_DAY_MS = 86_400_000;
 const RECONCILIATION_MAX_DAYS = 7;
+const SUGGESTION_MAX_DAYS = 15;
+
+interface UnmatchedLine {
+  id: string;
+  line: BankLine;
+}
+
+interface Suggestion {
+  tx: Transaction;
+  amountDiff: number; // in cents
+  libelleScore: number;
+  days: number;
+  reason: string;
+}
+
+function isValidDate(iso: string | null | undefined): boolean {
+  if (!iso) return false;
+  const [y, m, d] = iso.split("-").map(Number);
+  return !!(y && m && d && Number.isFinite(Date.UTC(y, m - 1, d)));
+}
 
 function toCents(value: number | string): number {
   const amount = typeof value === "string" ? parseAmount(value) : value;
@@ -540,6 +560,47 @@ function libelleScore(bankLibelle: string, transactionLibelle: string): number {
   return txWords.reduce((score, word) => score + (bankWords.has(word) ? 1 : 0), 0);
 }
 
+/** Broad, ranked suggestions for an unmatched bank line. */
+function findSuggestions(bl: BankLine, pool: Transaction[]): Suggestion[] {
+  const bankCents = toCents(bl.montant);
+  const isDebit = bl.montant < 0;
+  const out: Suggestion[] = [];
+  for (const t of pool) {
+    if (t.pointe) continue;
+    const txCents = Math.max(toCents(t.recettes), toCents(t.depenses));
+    if (txCents === 0) continue;
+    // Keep suggestions type-coherent (debit vs credit)
+    const txIsDebit = toCents(t.depenses) >= toCents(t.recettes);
+    if (txIsDebit !== isDebit) continue;
+
+    const amountDiff = Math.abs(txCents - bankCents);
+    const score = libelleScore(bl.libelle, t.libelle);
+    const days = diffDays(bl.date, t.date);
+
+    let matched = false;
+    let reason = "";
+    // 1. Identical amount (label may differ)
+    if (amountDiff === 0) {
+      matched = true;
+      reason = "Montant identique";
+    // 2. Similar label, amount within 5€
+    } else if (score >= 1 && amountDiff <= 500) {
+      matched = true;
+      reason = "Libellé similaire";
+    // 3. Date within 15 days, amount within 20€
+    } else if (days <= SUGGESTION_MAX_DAYS && amountDiff <= 2000) {
+      matched = true;
+      reason = "Date proche";
+    }
+
+    if (matched) out.push({ tx: t, amountDiff, libelleScore: score, days, reason });
+  }
+  out.sort(
+    (a, b) => a.amountDiff - b.amountDiff || b.libelleScore - a.libelleScore || a.days - b.days,
+  );
+  return out.slice(0, 8);
+}
+
 function MonthWorkspace({
   db, persist, currentMonth, currentYear,
 }: {
@@ -555,7 +616,13 @@ function MonthWorkspace({
   const [addOpen, setAddOpen] = useState(false);
   const [prefill, setPrefill] = useState<Partial<Transaction> | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [bankLines, setBankLines] = useState<BankLine[]>([]);
+  const [bankLines, setBankLines] = useState<UnmatchedLine[]>([]);
+  const [expandedSug, setExpandedSug] = useState<Set<string>>(new Set());
+
+  const suggestionPool = useMemo(
+    () => db.transactions.filter((t) => t.year === currentYear && !t.pointe),
+    [db.transactions, currentYear],
+  );
 
   const monthTx = db.transactions.filter((t) => t.year === currentYear && t.month === currentMonth);
   const filtered = monthTx
@@ -619,7 +686,7 @@ function MonthWorkspace({
       );
       const usedIds = new Set<string>();
       const dateUpdates = new Map<string, string>(); // txId -> new date
-      const unmatched: BankLine[] = [];
+      const unmatched: UnmatchedLine[] = [];
 
       for (const bl of linesInMonth) {
         const bankCents = toCents(bl.montant);
@@ -630,23 +697,28 @@ function MonthWorkspace({
         const candidates = monthList
           .filter((t) => {
             if (usedIds.has(t.id)) return false;
-            // Skip already pointed unless we're the ones about to point them
+            // Only unpointed rows are eligible for auto-matching
             if (t.pointe) return false;
             const txCents = Math.max(toCents(t.recettes), toCents(t.depenses));
+            // Strict absolute-amount equality is always required
             if (txCents === 0 || txCents !== bankCents) return false;
 
             // Cheque match — no date limit
             if (bankCheque && t.chequeNum && t.chequeNum === bankCheque) return true;
-            // Undated transaction: match on amount only, adopt bank date
-            if (!t.date) return true;
+
+            // Empty / invalid / null date: validate ONLY on strict amount + type
+            // coherence. The date-proximity rule is ignored entirely for undated rows.
+            if (!isValidDate(t.date)) {
+              const txIsDebit = toCents(t.depenses) >= toCents(t.recettes);
+              return txIsDebit === isDebit;
+            }
+
             // Cheque path — remove date limit if either side references a cheque
             const isCheque = !!bankCheque || /ch[eè]que/i.test(t.libelle) || /ch[eè]que/i.test(t.moyenPaiement);
             if (isCheque) return true;
             // Standard: date proximity
             const days = diffDays(bl.date, t.date);
             if (days > RECONCILIATION_MAX_DAYS) return false;
-            // Sign coherence bonus, not a filter
-            void isDebit;
             return true;
           })
           .map((t) => ({
@@ -664,16 +736,17 @@ function MonthWorkspace({
         const cand = candidates[0]?.t;
         if (cand) {
           usedIds.add(cand.id);
-          if (!cand.date && bl.date) dateUpdates.set(cand.id, bl.date);
+          // Copy the bank date into an empty/invalid date field
+          if (!isValidDate(cand.date) && isValidDate(bl.date)) dateUpdates.set(cand.id, bl.date);
         } else {
-          unmatched.push(bl);
+          unmatched.push({ id: crypto.randomUUID(), line: bl });
         }
       }
 
       persist((d) => {
         d.transactions = d.transactions.map((t) => {
           if (usedIds.has(t.id)) {
-            const newDate = dateUpdates.get(t.id) ?? t.date;
+            const newDate = dateUpdates.get(t.id) ?? (isValidDate(t.date) ? t.date : null);
             return { ...t, pointe: true, date: newDate };
           }
           return t;
@@ -687,6 +760,49 @@ function MonthWorkspace({
     } catch (e) {
       toast.error("Erreur : " + (e as Error).message);
     }
+  };
+
+  const toggleSuggestions = (ulId: string) => {
+    if (expandedSug.has(ulId)) {
+      setExpandedSug((prev) => {
+        const n = new Set(prev);
+        n.delete(ulId);
+        return n;
+      });
+      return;
+    }
+    setExpandedSug((prev) => new Set(prev).add(ulId));
+  };
+
+  const linkSuggestion = (ulId: string, txId: string) => {
+    const ul = bankLines.find((x) => x.id === ulId);
+    if (!ul) return;
+    const bl = ul.line;
+    const bankCents = toCents(bl.montant);
+    persist((d) => {
+      d.transactions = d.transactions.map((t) => {
+        if (t.id !== txId) return t;
+        const txCents = Math.max(toCents(t.recettes), toCents(t.depenses));
+        // Date correction: adopt the bank date when the row date is empty/invalid
+        const newDate = isValidDate(bl.date) && !isValidDate(t.date) ? bl.date : t.date;
+        // Amount correction: when amounts differ, trust the bank statement
+        let recettes = t.recettes;
+        let depenses = t.depenses;
+        if (txCents !== bankCents) {
+          if (bl.montant < 0) { depenses = Math.abs(bl.montant); recettes = 0; }
+          else { recettes = bl.montant; depenses = 0; }
+        }
+        return { ...t, pointe: true, date: newDate, recettes, depenses };
+      });
+      return d;
+    });
+    setBankLines((prev) => prev.filter((x) => x.id !== ulId));
+    setExpandedSug((prev) => {
+      const n = new Set(prev);
+      n.delete(ulId);
+      return n;
+    });
+    toast.success("Ligne rapprochée manuellement");
   };
 
   return (
@@ -820,10 +936,11 @@ function MonthWorkspace({
               </div>
               <ScrollArea className="max-h-[520px]">
                 <div className="space-y-2 pr-2">
-                  {bankLines.map((bl, i) => {
+                  {bankLines.map((ul) => {
+                    const bl = ul.line;
                     const cleanLib = cleanBankLibelle(bl.libelle);
                     return (
-                      <div key={i} className="rounded-lg border border-rose-500/30 bg-rose-500/5 p-3">
+                      <div key={ul.id} className="rounded-lg border border-rose-500/30 bg-rose-500/5 p-3">
                         <div className="overflow-x-auto">
                           <div className="flex min-w-[520px] items-start justify-between gap-3">
                             <div className="min-w-0 flex-1">
@@ -854,6 +971,47 @@ function MonthWorkspace({
                               <Plus className="h-4 w-4" />
                             </Button>
                           </div>
+                        </div>
+                        <div className="mt-2 border-t border-rose-500/20 pt-2">
+                          <button
+                            type="button"
+                            onClick={() => toggleSuggestions(ul.id)}
+                            className="flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
+                          >
+                            <Lightbulb className="h-3.5 w-3.5" />
+                            Voir les correspondances possibles
+                            <ChevronDown className={cn("h-3 w-3 transition-transform", expandedSug.has(ul.id) && "rotate-180")} />
+                          </button>
+                          {expandedSug.has(ul.id) && (() => {
+                            const sugs = findSuggestions(bl, suggestionPool);
+                            if (sugs.length === 0) {
+                              return <p className="mt-2 text-xs italic text-muted-foreground">Aucune correspondance possible trouvée.</p>;
+                            }
+                            return (
+                              <div className="mt-2 space-y-1.5">
+                                {sugs.map((sug) => {
+                                  const txAbs = sug.tx.recettes || sug.tx.depenses;
+                                  return (
+                                    <div key={sug.tx.id} className="flex items-center justify-between gap-2 rounded-md border border-border bg-background/60 p-2">
+                                      <div className="min-w-0 flex-1">
+                                        <p className="truncate text-sm font-medium">{sug.tx.libelle}</p>
+                                        <p className="whitespace-nowrap text-xs text-muted-foreground">
+                                          {sug.tx.date ? new Date(sug.tx.date).toLocaleDateString("fr-FR") : "—"} ·{" "}
+                                          <span className={sug.tx.recettes > 0 ? "text-emerald-500 dark:text-emerald-400" : "text-rose-500 dark:text-rose-400"}>{fmt(txAbs)}</span>
+                                          {" · "}
+                                          <span className="text-primary">{sug.reason}</span>
+                                          {sug.amountDiff > 0 && <span className="ml-1 text-amber-500">écart {fmt(sug.amountDiff / 100)}</span>}
+                                        </p>
+                                      </div>
+                                      <Button size="sm" variant="outline" className="h-7 shrink-0" onClick={() => linkSuggestion(ul.id, sug.tx.id)}>
+                                        <Link2 className="h-3.5 w-3.5" /> Lier
+                                      </Button>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            );
+                          })()}
                         </div>
                       </div>
                     );
@@ -914,7 +1072,7 @@ function MonthWorkspace({
           if (!wasEdit) {
             const targetAbs = tx.recettes || tx.depenses;
             setBankLines((prev) =>
-              prev.filter((bl) => Math.abs(Math.abs(bl.montant) - targetAbs) >= 0.005),
+              prev.filter((ul) => Math.abs(Math.abs(ul.line.montant) - targetAbs) >= 0.005),
             );
           }
           toast.success(wasEdit ? "Transaction mise à jour" : "Transaction ajoutée");

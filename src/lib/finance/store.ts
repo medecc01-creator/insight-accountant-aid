@@ -76,15 +76,6 @@ export function suggestFromLibelle(db: DBShape, libelle: string): Template | nul
 
   return db.templates.find((t) => (t.libelle || "").trim().toLowerCase() === key) ?? null;
 }
-  if (lastTx) {
-    return {
-      libelle: lastTx.libelle,
-      categorie: lastTx.categorie,
-      moyenPaiement: lastTx.moyenPaiement,
-    };
-  }
-return db.templates.find((t) => (t.libelle || "").trim().toLowerCase() === key) ?? null;
-}
 
 export function autocomplete(db: DBShape, query: string, limit = 8): Template[] {
   const q = (query || "").trim().toLowerCase();

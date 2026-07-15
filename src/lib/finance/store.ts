@@ -57,15 +57,25 @@ export function learnFromTransaction(db: DBShape, tx: Transaction) {
 }
 
 export function suggestFromLibelle(db: DBShape, libelle: string): Template | null {
-  const safeLibelle = libelle || "";
-  const key = safeLibelle.trim().toLowerCase();
+  const safelibelle = libelle || "";
+  const key = safelibelle.trim().toLowerCase();
   if (!key) return null;
-  
+
   // Prefer last transaction match (sécurisé)
   const lastTx = [...db.transactions].reverse().find(
-    (t) => (t.libelle || "").trim().toLowerCase() === key,
+    (t) => (t.libelle || "").trim().toLowerCase() === key
   );
-  );
+  
+  if (lastTx) {
+    return {
+      libelle: lastTx.libelle,
+      categorie: lastTx.categorie,
+      moyenPaiement: lastTx.moyenPaiement
+    };
+  }
+
+  return db.templates.find((t) => (t.libelle || "").trim().toLowerCase() === key) ?? null;
+}
   if (lastTx) {
     return {
       libelle: lastTx.libelle,

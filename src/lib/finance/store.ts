@@ -34,19 +34,15 @@ export async function saveDB(db: DBShape) {
 export function upsertTemplate(db: DBShape, t: Template) {
   const libelleTemplate = t.libelle || "";
   const key = libelleTemplate.trim().toLowerCase();
-  
+
   if (!key) return; // Si le libellé est vide, on ne l'enregistre pas comme modèle
 
-  const idx = db.templates.findIndex((x) => 
+  const idx = db.templates.findIndex((x) =>
     (x.libelle || "").trim().toLowerCase() === key
   );
-  
+
   if (idx >= 0) {
     db.templates[idx] = { ...db.templates[idx], ...t };
-  } else {
-    db.templates.push(t);
-  }
-}
   } else {
     db.templates.push(t);
   }

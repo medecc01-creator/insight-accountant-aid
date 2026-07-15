@@ -4,22 +4,18 @@ import type { Transaction } from "./types";
 
 /** Read a spreadsheet (CSV / XLS / XLSX) and return CSV text with `;` delimiter. */
 export async function readSpreadsheetAsCSV(file: File): Promise<string> {
-  const name = (file && file.name ? file.name : "").toLowerCase();
+  const name = file.name.toLowerCase();
   if (name.endsWith(".xls") || name.endsWith(".xlsx")) {
     const buf = await file.arrayBuffer();
     const wb = XLSX.read(buf, { type: "array", cellDates: false });
     const sheet = wb.Sheets[wb.SheetNames[0]];
     return XLSX.utils.sheet_to_csv(sheet, { FS: ";" });
   }
-
-  // Si ce n'est pas du Excel, on décode le CSV brut (comportement par défaut)
   const buf = await file.arrayBuffer();
-  try { 
-    return new TextDecoder("utf-8", { fatal: true }).decode(buf); 
-  } catch { 
-    return new TextDecoder("windows-1252").decode(buf); 
-  }
+  try { return new TextDecoder("utf-8", { fatal: true }).decode(buf); }
+  catch { return new TextDecoder("windows-1252").decode(buf); }
 }
+
 /** Extract a cheque number from a bank libelle (e.g. "CHEQUE 6013912"). */
 export function extractChequeNum(raw: string): string | null {
   if (!raw) return null;
@@ -76,15 +72,10 @@ export function parseAmount(s: string): number {
 }
 
 /** Parse "07-juil" (given a year+month context) or "07/07/2026" */
-export function parseFrDate(raw: any, defaultYear: number, defaultMonth?: number): string | null {
-  if (raw === null || raw === undefined) return null;
-  
-  // On s'assure de convertir la valeur brute en chaîne de caractères
-  const strRaw = String(raw).trim();
-  if (!strRaw) return null;
-  
-  const s = strRaw.toLowerCase();
-  
+export function parseFrDate(raw: string, defaultYear: number, defaultMonth?: number): string | null {
+  if (!raw) return null;
+  const s = raw.trim().toLowerCase();
+  if (!s) return null;
   // dd-monthAbbr
   let m = s.match(/^(\d{1,2})[-\s\/]([a-zûéèê]+)\.?$/i);
   if (m) {
@@ -146,36 +137,32 @@ export function parseComptaCSV(text: string, filename: string): ParsedImport {
 
   for (const row of rows) {
     if (!row || row.length < 3) continue;
-  const [col1, dateRaw, libelle, cat, rec, dep, moy] = [
-    String(row[0] ?? "").trim(),
-    String(row[1] ?? "").trim(),
-    String(row[2] ?? "").trim(),
-    String(row[3] ?? "").trim(),
-    String(row[4] ?? "").trim(),
-    String(row[5] ?? "").trim(),
-    String(row[6] ?? "").trim(),
-  ];
-  
-  if (!libelle) continue;
-  
-  // Skip header row
-  const libelleLower = libelle.toLowerCase();
-  if (libelleLower === "libellé" || libelleLower === "libelle") continue;
-  
-  // Skip "Solde de départ" and "Synthèse" summary rows (sécurisé)
-  if (/^solde/i.test(col1) || /synth[eè]se/i.test(libelle)) continue;
+    const [col1, dateRaw, libelle, cat, rec, dep, moy] = [
+      (row[0] ?? "").trim(),
+      (row[1] ?? "").trim(),
+      (row[2] ?? "").trim(),
+      (row[3] ?? "").trim(),
+      (row[4] ?? "").trim(),
+      (row[5] ?? "").trim(),
+      (row[6] ?? "").trim(),
+    ];
+    if (!libelle) continue;
+    // Skip header row
+    if (libelle.toLowerCase() === "libellé" || libelle.toLowerCase() === "libelle") continue;
+    // Skip "Solde de départ" and "Synthèse" summary rows
+    if (/^solde/i.test(col1) || /synth[eè]se/i.test(libelle)) continue;
 
-  const recettes = parseAmount(rec);
-  const depensesRaw = parseAmount(dep);
-  const depenses = Math.abs(depensesRaw);
-  const hasAmount = recettes !== 0 || depenses !== 0;
-  const hasDate = !!dateRaw;
+    const recettes = parseAmount(rec);
+    const depensesRaw = parseAmount(dep);
+    const depenses = Math.abs(depensesRaw);
+    const hasAmount = recettes !== 0 || depenses !== 0;
+    const hasDate = !!dateRaw;
 
-  // Template row: no date AND no amount
-  if (!hasAmount && !hasDate) {
-    templates.push({ libelle });
-    continue;
-  }
+    // Template row: no date AND no amount
+    if (!hasAmount && !hasDate) {
+      templates.push({ libelle });
+      continue;
+    }
 
     transactions.push({
       id: crypto.randomUUID(),
@@ -212,7 +199,7 @@ export function parseBankCSV(text: string): BankLine[] {
   const rows = parsed.data;
   if (!rows.length) return [];
   const currentYear = new Date().getFullYear();
-  const headers = Object.keys(rows[0] || {}).map((h) => (h || "").toLowerCase());
+  const headers = Object.keys(rows[0]).map((h) => h.toLowerCase());
 
   const findHeader = (patterns: RegExp[]) => {
     for (const p of patterns) {
@@ -228,9 +215,9 @@ export function parseBankCSV(text: string): BankLine[] {
   const debitKey = findHeader([/^d[ée]bit/i]);
   const creditKey = findHeader([/^cr[ée]dit/i]);
 
-  const originalKeys = Object.keys(rows[0] || {});
+  const originalKeys = Object.keys(rows[0]);
   const keyOf = (lower: string | null) =>
-    lower ? originalKeys.find((k) => (k || "").toLowerCase() === lower) ?? null : null;
+    lower ? originalKeys.find((k) => k.toLowerCase() === lower) ?? null : null;
 
   const dK = keyOf(dateKey);
   const lK = keyOf(libKey);
@@ -294,12 +281,10 @@ export function cleanBankLibelle(raw: string): string {
     .replace(/\s+\d{2}\/\d{2}\s*$/g, "");
 
   // Title case for all-uppercase strings (>=3 letters)
-  if (!s) return (raw || "").trim();
-
   if (/^[^a-z]+$/.test(s) && /[A-Z]/.test(s)) {
     s = s.toLowerCase().replace(/\b([a-zà-ÿ])/g, (m) => m.toUpperCase());
   }
 
-  return s.trim().replace(/\s+/g, " ") || (raw || "").trim();
+  return s.trim().replace(/\s+/g, " ") || raw.trim();
 }
 

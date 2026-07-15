@@ -111,46 +111,36 @@ function App() {
   const persist = (updater: (d: DBShape) => DBShape) =>
     setDb((d) => updater({ ...d, transactions: [...d.transactions], templates: [...d.templates], categories: [...d.categories] }));
 
-  const handleComptaImport = async (files: File[]) => {
-    let totalAdded = 0;
-    let totalDup = 0;
-    let lastYear = currentYear;
-    let lastMonth = currentMonth;
-    for (const file of files) {
-      try {
-        const text = await readSpreadsheetAsCSV(file);
-        const { transactions, templates, year, month } = parseComptaCSV(text, file.name);
-        lastYear = year;
-        lastMonth = month;
-        let addedCount = 0;
+  const handleComptaImport = async (file: File) => {
+    try {
+      const text = await readSpreadsheetAsCSV(file);
+      const { transactions, templates, year, month } = parseComptaCSV(text, file.name);
+      let addedCount = 0;
       persist((d) => {
-          // Strict global dedup across ALL months: ignore lines identical to any existing tx (secured libelle)
-          const isDup = (nt: Transaction) => d.transactions.some((et) =>
-            et.date === nt.date &&
-            (et.libelle || "").trim().toLowerCase() === (nt.libelle || "").trim().toLowerCase() &&
-            Math.abs(et.recettes - nt.recettes) < 0.005 &&
-            Math.abs(et.depenses - nt.depenses) < 0.005
-          );
-          const toAdd = transactions.filter((nt) => !isDup(nt));
-          addedCount = toAdd.length;
-          d.transactions = [...d.transactions, ...toAdd];
-          for (const t of templates) upsertTemplate(d, { libelle: t.libelle });
-          for (const tx of toAdd) learnFromTransaction(d, tx);
-          return d;
-        });
-        totalAdded += addedCount;
-        totalDup += transactions.length - addedCount;
-      } catch (e) {
-        toast.error(`Import « ${file.name} » : ${(e as Error).message}`);
-      }
-    }
-    setCurrentMonth(lastMonth);
-    setCurrentYear(lastYear);
-    if (files.length > 0) {
+        const existing = d.transactions.filter((t) => t.year === year && t.month === month);
+        const isDup = (nt: Transaction) => existing.some((et) =>
+          et.date === nt.date &&
+          et.libelle.trim().toLowerCase() === nt.libelle.trim().toLowerCase() &&
+          Math.abs(et.recettes - nt.recettes) < 0.005 &&
+          Math.abs(et.depenses - nt.depenses) < 0.005,
+        );
+        const toAdd = transactions.filter((nt) => !isDup(nt));
+        addedCount = toAdd.length;
+        d.transactions = [...d.transactions, ...toAdd];
+        for (const t of templates) upsertTemplate(d, { libelle: t.libelle });
+        for (const tx of toAdd) learnFromTransaction(d, tx);
+        return d;
+      });
+      setCurrentMonth(month);
+      setCurrentYear(year);
+      const dupCount = transactions.length - addedCount;
       toast.success(
-        `${files.length} fichier${files.length > 1 ? "s" : ""} · ${totalAdded} nouvelle${totalAdded > 1 ? "s" : ""} transaction${totalAdded > 1 ? "s" : ""}` +
-        (totalDup > 0 ? ` · ${totalDup} doublon${totalDup > 1 ? "s" : ""} ignoré${totalDup > 1 ? "s" : ""}` : ""),
+        `Importé : ${addedCount} nouvelle${addedCount > 1 ? "s" : ""} transaction${addedCount > 1 ? "s" : ""}` +
+        (dupCount > 0 ? ` · ${dupCount} doublon${dupCount > 1 ? "s" : ""} ignoré${dupCount > 1 ? "s" : ""}` : "") +
+        ` (${MONTH_LABELS[month - 1]} ${year})`,
       );
+    } catch (e) {
+      toast.error("Erreur d'import : " + (e as Error).message);
     }
   };
 
@@ -261,7 +251,7 @@ function Header({
   db, onImportCompta: _onImportCompta, onRestore,
 }: {
   db: DBShape;
-  onImportCompta: (f: File | File[]) => void;
+  onImportCompta: (f: File) => void;
   onRestore: (db: DBShape) => void;
 }) {
   const restoreRef = useRef<HTMLInputElement>(null);
@@ -332,10 +322,10 @@ function Header({
 
 // ---------------- Empty state / drag-drop ----------------
 
-function EmptyState({ onImport }: { onImport: (f: File | File[]) => void }) {
+function EmptyState({ onImport }: { onImport: (f: File) => void }) {
   return (
     <div className="mt-10">
-      <DropZone onFile={onImport} label="Glissez vos fichiers de comptes ici" hint="Formats acceptés : .csv, .xls, .xlsx · sélection multiple possible" large accept=".csv,.xls,.xlsx" />
+      <DropZone onFile={onImport} label="Glissez votre fichier de comptes ici" hint="Formats acceptés : .csv, .xls, .xlsx" large accept=".csv,.xls,.xlsx" />
     </div>
   );
 }
@@ -343,7 +333,7 @@ function EmptyState({ onImport }: { onImport: (f: File | File[]) => void }) {
 function DropZone({
   onFile, label, hint, large, accept = ".csv,.xls,.xlsx",
 }: {
-  onFile: (f: File | File[]) => void;
+  onFile: (f: File) => void;
   label: string;
   hint?: string;
   large?: boolean;
@@ -358,8 +348,8 @@ function DropZone({
       onDrop={(e) => {
         e.preventDefault();
         setDrag(false);
-        const files = Array.from(e.dataTransfer.files ?? []);
-        if (files.length) onFile(files);
+        const f = e.dataTransfer.files?.[0];
+        if (f) onFile(f);
       }}
       onClick={() => inputRef.current?.click()}
       className={cn(
@@ -375,11 +365,10 @@ function DropZone({
         ref={inputRef}
         type="file"
         accept={accept}
-        multiple
         className="hidden"
         onChange={(e) => {
-          const files = Array.from(e.target.files ?? []);
-          if (files.length) onFile(files);
+          const f = e.target.files?.[0];
+          if (f) onFile(f);
           e.target.value = "";
         }}
       />
@@ -387,7 +376,7 @@ function DropZone({
   );
 }
 
-function ImportComptaButton({ onFile }: { onFile: (f: File | File[]) => void }) {
+function ImportComptaButton({ onFile }: { onFile: (f: File) => void }) {
   const ref = useRef<HTMLInputElement>(null);
   return (
     <>
@@ -398,11 +387,10 @@ function ImportComptaButton({ onFile }: { onFile: (f: File | File[]) => void }) 
         ref={ref}
         type="file"
         accept=".csv,.xls,.xlsx"
-        multiple
         className="hidden"
         onChange={(e) => {
-          const files = Array.from(e.target.files ?? []);
-          if (files.length) onFile(files);
+          const f = e.target.files?.[0];
+          if (f) onFile(f);
           e.target.value = "";
         }}
       />
@@ -568,7 +556,7 @@ function CategoryManagerDialog({
   const add = () => {
     const name = draft.trim();
     if (!name) return;
-   if (categories.some((c) => (c || "").toLowerCase() === (name || "").toLowerCase())) {
+    if (categories.some((c) => c.toLowerCase() === name.toLowerCase())) {
       toast.error("Cette catégorie existe déjà");
       return;
     }
@@ -674,8 +662,7 @@ function diffDays(a: string | null, b: string | null): number {
 }
 
 function normalizeLibelle(value: string): string {
-  const safeValue = value || "";
-  return cleanBankLibelle(safeValue)
+  return cleanBankLibelle(value)
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
@@ -755,8 +742,8 @@ function MonthWorkspace({
   const [expandedSug, setExpandedSug] = useState<Set<string>>(new Set());
 
   const suggestionPool = useMemo(
-    () => db.transactions.filter((t) => !t.pointe),
-    [db.transactions],
+    () => db.transactions.filter((t) => t.year === currentYear && !t.pointe),
+    [db.transactions, currentYear],
   );
 
   const searchNum = parseFloat(search.replace(",", "."));
@@ -764,13 +751,13 @@ function MonthWorkspace({
 
   const monthTx = db.transactions.filter((t) => t.year === currentYear && t.month === currentMonth);
   const filtered = monthTx
-  .filter((t) => {
+    .filter((t) => {
       if (catFilter !== "all" && t.categorie !== catFilter) return false;
       if (pointFilter === "yes" && !t.pointe) return false;
       if (pointFilter === "no" && t.pointe) return false;
       if (search) {
         const q = search.toLowerCase();
-        const matchesLibelle = (t.libelle || "").toLowerCase().includes(q);
+        const matchesLibelle = t.libelle.toLowerCase().includes(q);
         const txAbs = t.recettes || t.depenses;
         const matchesAmount = isAmountSearch && Math.abs(txAbs - Math.abs(searchNum)) < 0.005;
         if (!matchesLibelle && !matchesAmount) return false;
@@ -813,45 +800,53 @@ function MonthWorkspace({
         toast.error("Aucune ligne détectée dans le relevé");
         return;
       }
-      // Trans-monthly: process ALL bank lines, not just the current month view.
-      // A bank line dated July 1st may match a compta line entered June 29th.
-      const linesToFilter = allLines.filter((bl) => toCents(bl.montant) !== 0);
+      // Only consider bank lines within the current month view
+      const linesInMonth = allLines.filter((bl) => {
+        if (!bl.date) return true;
+        const m = bl.date.match(/^(\d{4})-(\d{2})-/);
+        if (!m) return true;
+        return +m[1] === currentYear && +m[2] === currentMonth;
+      });
+      if (!linesInMonth.length) {
+        toast.info(`Aucune ligne de ${MONTH_LABELS[currentMonth - 1]} ${currentYear} dans ce relevé`);
+        return;
+      }
 
-      // Global pointed dedup: skip bank lines already reconciled (pointed) in any
-      // previous import, across all months — never re-show them as missing.
-      const pointedTx = db.transactions.filter((t) => t.pointe);
+      const monthList = db.transactions.filter(
+        (t) => t.year === currentYear && t.month === currentMonth,
+      );
+      // Dedup: skip bank lines already reconciled (pointed) in a previous import
+      const pointedTx = monthList.filter((t) => t.pointe);
       const alreadyReconciled = (bl: BankLine): boolean => {
-        const bankCents = toCents(Math.abs(bl.montant));
-        const isDebit = bl.montant < 0;
+        const bankCents = toCents(bl.montant);
         return pointedTx.some((t) => {
-          const txCents = toCents(Math.max(t.recettes, t.depenses));
+          const txCents = Math.max(toCents(t.recettes), toCents(t.depenses));
           if (txCents !== bankCents) return false;
-          const txIsDebit = t.depenses >= t.recettes;
-          if (txIsDebit !== isDebit) return false;
           if (isValidDate(t.date) && isValidDate(bl.date)) {
             return diffDays(bl.date, t.date) <= RECONCILIATION_MAX_DAYS;
           }
           return true;
         });
       };
-      const linesToProcess = linesToFilter.filter((bl) => !alreadyReconciled(bl));
-      const skippedDupes = linesToFilter.length - linesToProcess.length;
-
-      // Global candidate pool: ALL unpointed compta transactions (any month)
-      const globalPool = db.transactions.filter((t) => !t.pointe);
+      const linesToProcess = linesInMonth.filter((bl) => !alreadyReconciled(bl));
+      const skippedDupes = linesInMonth.length - linesToProcess.length;
       const usedIds = new Set<string>();
       const dateUpdates = new Map<string, string>(); // txId -> new date
       const unmatched: UnmatchedLine[] = [];
 
       for (const bl of linesToProcess) {
-        const bankCents = toCents(Math.abs(bl.montant));
+        const bankCents = toCents(bl.montant);
+        if (bankCents === 0) continue;
         const bankCheque = extractChequeNum(bl.libelle);
         const isDebit = bl.montant < 0;
 
-        const candidates = globalPool
+        const candidates = monthList
           .filter((t) => {
             if (usedIds.has(t.id)) return false;
-            const txCents = toCents(Math.max(t.recettes, t.depenses));
+            // Only unpointed rows are eligible for auto-matching
+            if (t.pointe) return false;
+            const txCents = Math.max(toCents(t.recettes), toCents(t.depenses));
+            // Strict absolute-amount equality is always required
             if (txCents === 0 || txCents !== bankCents) return false;
 
             // Cheque match — no date limit
@@ -860,14 +855,14 @@ function MonthWorkspace({
             // Empty / invalid / null date: validate ONLY on strict amount + type
             // coherence. The date-proximity rule is ignored entirely for undated rows.
             if (!isValidDate(t.date)) {
-              const txIsDebit = t.depenses >= t.recettes;
+              const txIsDebit = toCents(t.depenses) >= toCents(t.recettes);
               return txIsDebit === isDebit;
             }
 
             // Cheque path — remove date limit if either side references a cheque
             const isCheque = !!bankCheque || /ch[eè]que/i.test(t.libelle) || /ch[eè]que/i.test(t.moyenPaiement);
             if (isCheque) return true;
-            // Standard: date proximity (trans-monthly — 7 days spans month boundaries)
+            // Standard: date proximity
             const days = diffDays(bl.date, t.date);
             if (days > RECONCILIATION_MAX_DAYS) return false;
             return true;
@@ -887,6 +882,7 @@ function MonthWorkspace({
         const cand = candidates[0]?.t;
         if (cand) {
           usedIds.add(cand.id);
+          // Copy the bank date into an empty/invalid date field
           if (!isValidDate(cand.date) && isValidDate(bl.date)) dateUpdates.set(cand.id, bl.date);
         } else {
           unmatched.push({ id: crypto.randomUUID(), line: bl });

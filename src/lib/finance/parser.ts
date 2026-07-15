@@ -11,14 +11,15 @@ export async function readSpreadsheetAsCSV(file: File): Promise<string> {
     const sheet = wb.Sheets[wb.SheetNames[0]];
     return XLSX.utils.sheet_to_csv(sheet, { FS: ";" });
   }
-  // Si ce n'est pas du Excel, on laisse le comportement par défaut (ex: CSV brut)
-  return ""; 
-}
-  const buf = await file.arrayBuffer();
-  try { return new TextDecoder("utf-8", { fatal: true }).decode(buf); }
-  catch { return new TextDecoder("windows-1252").decode(buf); }
-}
 
+  // Si ce n'est pas du Excel, on décode le CSV brut (comportement par défaut)
+  const buf = await file.arrayBuffer();
+  try { 
+    return new TextDecoder("utf-8", { fatal: true }).decode(buf); 
+  } catch { 
+    return new TextDecoder("windows-1252").decode(buf); 
+  }
+}
 /** Extract a cheque number from a bank libelle (e.g. "CHEQUE 6013912"). */
 export function extractChequeNum(raw: string): string | null {
   if (!raw) return null;
